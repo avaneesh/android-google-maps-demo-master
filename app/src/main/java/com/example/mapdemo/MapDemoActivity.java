@@ -3,6 +3,7 @@ package com.example.mapdemo;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.app.Dialog;
+import android.content.Context;
 import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.IntentSender;
@@ -16,7 +17,9 @@ import android.util.Log;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.animation.BounceInterpolator;
+import android.view.inputmethod.InputMethodManager;
 import android.widget.EditText;
+import android.widget.ListView;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -36,6 +39,15 @@ import com.google.android.gms.maps.model.BitmapDescriptorFactory;
 import com.google.android.gms.maps.model.LatLng;
 import com.google.android.gms.maps.model.Marker;
 import com.google.android.gms.maps.model.MarkerOptions;
+import com.loopj.android.http.AsyncHttpClient;
+import com.loopj.android.http.JsonHttpResponseHandler;
+
+import org.apache.http.Header;
+import org.json.JSONException;
+import org.json.JSONObject;
+
+import java.util.ArrayList;
+
 
 // maps API key: AIzaSyDfQovu3zQ9MN1dyeSOiGKsvQBLNhi8vmg
 public class MapDemoActivity extends FragmentActivity implements
@@ -50,6 +62,15 @@ public class MapDemoActivity extends FragmentActivity implements
 	private LocationRequest mLocationRequest;
 	private long UPDATE_INTERVAL = 60000;  /* 60 secs */
 	private long FASTEST_INTERVAL = 5000; /* 5 secs */
+
+    private EditText etSearch;
+    private ListView lvResults;
+    private ArrayList<Restaurant> listRestaurants;
+    private RestaurantsAdapter aRestaurants;
+
+//    private final String GOOGLE_API_KEY="AIzaSyDfQovu3zQ9MN1dyeSOiGKsvQBLNhi8vmg";
+//    private final String GOOGLE_API_KEY = "AIzaSyDtz2n8SizCnw1jw5A8TTlLDYHqKpEvi9I"; // android key - doesnt work
+    private final String GOOGLE_API_KEY = "AIzaSyB0YUvMN8cjlP41ZC-IGajc9m2J5oEn4nE"; // server key - works
 
 	/*
 	 * Define a request code to send to Google Play services This code is
@@ -74,6 +95,12 @@ public class MapDemoActivity extends FragmentActivity implements
 			Toast.makeText(this, "Error - Map Fragment was null!!", Toast.LENGTH_SHORT).show();
 		}
 
+        etSearch = (EditText) findViewById(R.id.etSearch);
+        lvResults = (ListView) findViewById(R.id.lvResults);
+
+        listRestaurants = new ArrayList();
+        aRestaurants = new RestaurantsAdapter(this, listRestaurants);
+        lvResults.setAdapter(aRestaurants);
 	}
 
     protected void loadMap(GoogleMap googleMap) {
@@ -397,5 +424,94 @@ public class MapDemoActivity extends FragmentActivity implements
         public View getInfoWindow(Marker marker) {
             return null;
         }
+    }
+
+    public void onSearchClick(View v){
+        String searchQ = etSearch.getText().toString();
+        if (searchQ.isEmpty()) {
+            searchQ = "restaurants";
+        }
+
+        Location location = LocationServices.FusedLocationApi.getLastLocation(mGoogleApiClient);
+        String currLongitude = Double.toString(location.getLongitude());
+        String currLatitue = Double.toString(location.getLatitude());
+        String locationQ = currLatitue+","+currLongitude;
+        Toast.makeText(this, "Searching "+searchQ+" near: "+locationQ, Toast.LENGTH_SHORT).show();
+
+//          String places_search_q="https://maps.googleapis.com/maps/api/place/search/json?location="+locationQ+"&sensor=true&key="+GOOGLE_API_KEY+
+//                "&keyword="+searchQ+"&types=food&rankby=distance"; // WORKS
+//
+          String places_search_q="https://maps.googleapis.com/maps/api/place/nearbysearch/json?location="+locationQ+
+                "&key="+GOOGLE_API_KEY+
+                "&keyword="+searchQ+"&rankby=distance"; // WORKS
+
+
+        doSearch(places_search_q);
+    }
+
+    private void doSearch(String places_search_q) {
+        InputMethodManager imm = (InputMethodManager)getSystemService(
+                Context.INPUT_METHOD_SERVICE);
+        imm.hideSoftInputFromWindow(etSearch.getWindowToken(), 0);
+        AsyncHttpClient client = new AsyncHttpClient();
+        client.get(this, places_search_q, new JsonHttpResponseHandler(){
+            @Override
+            public void onSuccess(int statusCode, Header[] headers, JSONObject response) {
+                Log.e("RESP", response.toString());
+                try {
+                    if (response.getString("status").equals("OK")) {
+                        handleSearchResp(response);
+                    }
+                    else {
+                        Toast.makeText(getApplicationContext(), "Error: "+response.getString("error_message"), Toast.LENGTH_SHORT).show();
+                    }
+                } catch (JSONException e) {
+                    e.printStackTrace();
+                }
+
+            }
+
+            @Override
+            public void onFailure(int statusCode, Header[] headers, String responseString, Throwable throwable) {
+                Toast.makeText(getApplicationContext(), "Failed!!", Toast.LENGTH_SHORT).show();
+            }
+        });
+    }
+
+    private void handleSearchResp(JSONObject response){
+        try {
+            aRestaurants.clear();
+            aRestaurants.addAll(Restaurant.fromJSONArray(response.getJSONArray("results")));
+            getPlaceDetails();
+        } catch (JSONException e) {
+            e.printStackTrace();
+        }
+
+    }
+
+    // Retrieve address from Place ID and update UI
+    private ArrayList<Restaurant> getPlaceDetails() {
+        ArrayList listRestaurants = new ArrayList();
+        String detailsQ = "https://maps.googleapis.com/maps/api/place/details/json?key="+GOOGLE_API_KEY+"&placeid=";
+        for (int i = 0; i < aRestaurants.getCount(); i++) {
+            Restaurant restaurant = (Restaurant) aRestaurants.getItem(i);
+            String currPlaceId = restaurant.getPlaces_id();
+            AsyncHttpClient client = new AsyncHttpClient();
+            client.get(this, detailsQ+currPlaceId, new JsonHttpResponseHandler(){
+                @Override
+                public void onSuccess(int statusCode, Header[] headers, JSONObject response) {
+                    for (int i = 0; i < aRestaurants.getCount(); i++) {
+                        Restaurant.updateFromJSON(response, (Restaurant) aRestaurants.getItem(i));
+                    }
+                    aRestaurants.notifyDataSetChanged();
+                }
+
+                @Override
+                public void onFailure(int statusCode, Header[] headers, Throwable throwable, JSONObject errorResponse) {
+                    Toast.makeText(getApplicationContext(), "Could not get details!!", Toast.LENGTH_SHORT).show();
+                }
+            });
+        }
+        return listRestaurants;
     }
 }
